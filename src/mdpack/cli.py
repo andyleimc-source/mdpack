@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from pathlib import Path
 
 import click
@@ -11,7 +13,91 @@ import click
 from . import __version__
 from .converters.base import ConversionError
 from .registry import CONVERTERS, supported_extensions
-from .walker import iter_jobs, needs_update, run_job
+from .scanner import (
+    DEFAULT_EXCLUDE_DIRS,
+    ScanConfig,
+    ScanStats,
+    Scanner,
+    parse_size,
+)
+from .walker import ConvertJob, needs_update, run_job
+
+
+def _scan_options(f):
+    """Shared scanner-related flags for `convert` and `watch`."""
+    f = click.option(
+        "--max-size",
+        "max_size",
+        default="100MB",
+        show_default=True,
+        help="Skip files larger than this (e.g. 50MB, 1GB). 0 = unlimited.",
+    )(f)
+    f = click.option(
+        "--pdf-max-size",
+        "pdf_max_size",
+        default="50MB",
+        show_default=True,
+        help="Skip PDF files larger than this (Docling is memory-hungry). 0 = unlimited.",
+    )(f)
+    f = click.option(
+        "--include-hidden",
+        is_flag=True,
+        help="Include dotfiles and dotdirs (off by default).",
+    )(f)
+    f = click.option(
+        "--follow-symlinks",
+        is_flag=True,
+        help="Descend into symlinked directories (off by default; loop-protected).",
+    )(f)
+    f = click.option(
+        "--ignore-file",
+        type=click.Path(path_type=Path, dir_okay=False),
+        default=None,
+        help="Path to a gitignore-syntax file (default: <src>/.mdpackignore).",
+    )(f)
+    f = click.option(
+        "--exclude",
+        "exclude",
+        multiple=True,
+        metavar="PATTERN",
+        help="Gitignore-syntax pattern to exclude. Repeatable.",
+    )(f)
+    f = click.option(
+        "--respect-gitignore",
+        is_flag=True,
+        help="Also honor <src>/.gitignore.",
+    )(f)
+    f = click.option(
+        "--max-depth",
+        type=int,
+        default=None,
+        help="Cap recursion depth.",
+    )(f)
+    return f
+
+
+def _build_scan_config(
+    *,
+    max_size: str,
+    pdf_max_size: str,
+    include_hidden: bool,
+    follow_symlinks: bool,
+    ignore_file: Path | None,
+    exclude: tuple[str, ...],
+    respect_gitignore: bool,
+    max_depth: int | None,
+) -> ScanConfig:
+    return ScanConfig(
+        exclude_dirs=DEFAULT_EXCLUDE_DIRS,
+        extra_excludes=tuple(exclude),
+        ignore_file=ignore_file,
+        respect_gitignore=respect_gitignore,
+        follow_symlinks=follow_symlinks,
+        include_hidden=include_hidden,
+        max_size_bytes=parse_size(max_size),
+        pdf_max_size_bytes=parse_size(pdf_max_size),
+        max_depth=max_depth,
+    )
 
 
 @click.group()
@@ -32,7 +118,33 @@ def main() -> None:
 )
 @click.option("--force", is_flag=True, help="Re-convert even if output is newer than source.")
 @click.option("--quiet", is_flag=True, help="Only print errors.")
-def convert(src: Path, output: Path | None, force: bool, quiet: bool) -> None:
+@click.option("--no-progress", is_flag=True, help="Hide the progress bar even on a TTY.")
+@click.option(
+    "-j",
+    "--jobs",
+    "jobs_n",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Worker threads. PDFs share a Docling singleton — extra threads don't help PDF.",
+)
+@_scan_options
+def convert(
+    src: Path,
+    output: Path | None,
+    force: bool,
+    quiet: bool,
+    no_progress: bool,
+    jobs_n: int,
+    max_size: str,
+    pdf_max_size: str,
+    include_hidden: bool,
+    follow_symlinks: bool,
+    ignore_file: Path | None,
+    exclude: tuple[str, ...],
+    respect_gitignore: bool,
+    max_depth: int | None,
+) -> None:
     """Convert SRC (file or directory) into Markdown."""
     src = src.resolve()
 
@@ -41,35 +153,151 @@ def convert(src: Path, output: Path | None, force: bool, quiet: bool) -> None:
     else:
         out_root = output.resolve()
 
-    jobs = iter_jobs(src, out_root)
+    try:
+        cfg = _build_scan_config(
+            max_size=max_size,
+            pdf_max_size=pdf_max_size,
+            include_hidden=include_hidden,
+            follow_symlinks=follow_symlinks,
+            ignore_file=ignore_file,
+            exclude=exclude,
+            respect_gitignore=respect_gitignore,
+            max_depth=max_depth,
+        )
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(2)
+
+    jobs, stats = Scanner(cfg).scan_with_stats(src, out_root)
     if not jobs:
-        click.echo(f"No convertible files found under {src}.", err=True)
+        _maybe_explain_empty(src, stats)
         sys.exit(1)
 
     source_root = src if src.is_dir() else src.parent
-    ok = 0
-    skipped = 0
-    failed = 0
+    show_bar = not quiet and not no_progress and sys.stderr.isatty() and len(jobs) > 1
 
+    if jobs_n > 1:
+        ok, skipped, failed = _run_concurrent(
+            jobs, source_root=source_root, out_root=out_root,
+            force=force, quiet=quiet, show_bar=show_bar, jobs_n=jobs_n,
+        )
+    else:
+        ok, skipped, failed = _run_serial(
+            jobs, source_root=source_root, out_root=out_root,
+            force=force, quiet=quiet, show_bar=show_bar,
+        )
+
+    _print_summary(ok, skipped, failed, out_root, stats)
+    if failed:
+        sys.exit(2)
+
+
+def _maybe_explain_empty(src: Path, stats: ScanStats) -> None:
+    click.echo(f"No convertible files found under {src}.", err=True)
+    bits: list[str] = []
+    if stats.excluded_dirs:
+        bits.append(f"{stats.excluded_dirs} dirs excluded")
+    if stats.excluded_hidden:
+        bits.append(f"{stats.excluded_hidden} hidden entries skipped")
+    if stats.skipped_size:
+        bits.append(f"{stats.skipped_size} files over size cap")
+    if stats.skipped_out_root:
+        bits.append(f"{stats.skipped_out_root} entries inside output dir")
+    if bits:
+        click.echo("(" + ", ".join(bits) + ")", err=True)
+
+
+def _run_serial(
+    jobs: list[ConvertJob], *, source_root: Path, out_root: Path,
+    force: bool, quiet: bool, show_bar: bool,
+) -> tuple[int, int, int]:
+    ok = skipped = failed = 0
+    bar_cm = (
+        click.progressbar(
+            jobs, label="converting", file=sys.stderr,
+            item_show_func=lambda j: j.src.name if j else "",
+        )
+        if show_bar
+        else nullcontext(jobs)
+    )
+    with bar_cm as iterator:
+        for job in iterator:
+            if not needs_update(job, force=force):
+                skipped += 1
+                if not quiet and not show_bar:
+                    click.echo(f"skip   {_rel(job.dst, out_root)} (up to date)")
+                continue
+            try:
+                run_job(job, source_root=source_root)
+                ok += 1
+                if not quiet and not show_bar:
+                    click.echo(f"ok     {_rel(job.dst, out_root)}")
+            except ConversionError as e:
+                failed += 1
+                click.echo(f"FAIL   {job.src}: {e.reason}", err=True)
+    return ok, skipped, failed
+
+
+def _run_concurrent(
+    jobs: list[ConvertJob], *, source_root: Path, out_root: Path,
+    force: bool, quiet: bool, show_bar: bool, jobs_n: int,
+) -> tuple[int, int, int]:
+    ok = skipped = failed = 0
+    pending: list[ConvertJob] = []
     for job in jobs:
         if not needs_update(job, force=force):
             skipped += 1
-            if not quiet:
+            if not quiet and not show_bar:
                 click.echo(f"skip   {_rel(job.dst, out_root)} (up to date)")
-            continue
-        try:
-            run_job(job, source_root=source_root)
-            ok += 1
-            if not quiet:
-                click.echo(f"ok     {_rel(job.dst, out_root)}")
-        except ConversionError as e:
-            failed += 1
-            click.echo(f"FAIL   {job.src}: {e.reason}", err=True)
+        else:
+            pending.append(job)
 
-    summary = f"\n{ok} converted, {skipped} skipped, {failed} failed → {out_root}"
+    if not pending:
+        return ok, skipped, failed
+
+    bar_cm = (
+        click.progressbar(length=len(pending), label="converting", file=sys.stderr)
+        if show_bar
+        else nullcontext(None)
+    )
+    with bar_cm as bar:
+        with ThreadPoolExecutor(max_workers=jobs_n) as ex:
+            futures = {ex.submit(run_job, job, source_root=source_root): job for job in pending}
+            for fut in as_completed(futures):
+                job = futures[fut]
+                try:
+                    fut.result()
+                    ok += 1
+                    if not quiet and not show_bar:
+                        click.echo(f"ok     {_rel(job.dst, out_root)}")
+                except ConversionError as e:
+                    failed += 1
+                    click.echo(f"FAIL   {job.src}: {e.reason}", err=True)
+                except Exception as e:
+                    failed += 1
+                    click.echo(f"FAIL   {job.src}: {type(e).__name__}: {e}", err=True)
+                if bar is not None:
+                    bar.update(1)
+    return ok, skipped, failed
+
+
+def _print_summary(
+    ok: int, skipped: int, failed: int, out_root: Path, stats: ScanStats
+) -> None:
+    extras: list[str] = []
+    if stats.excluded_dirs:
+        extras.append(f"{stats.excluded_dirs} dirs excluded")
+    if stats.excluded_hidden:
+        extras.append(f"{stats.excluded_hidden} hidden")
+    if stats.skipped_size:
+        extras.append(f"{stats.skipped_size} oversize")
+    if stats.skipped_out_root:
+        extras.append(f"{stats.skipped_out_root} in out_root")
+    if stats.skipped_symlink_loop:
+        extras.append(f"{stats.skipped_symlink_loop} symlink loops")
+    suffix = f" [{', '.join(extras)}]" if extras else ""
+    summary = f"\n{ok} converted, {skipped} skipped, {failed} failed → {out_root}{suffix}"
     click.echo(summary, err=failed > 0)
-    if failed:
-        sys.exit(2)
 
 
 def _rel(p: Path, root: Path) -> str:
@@ -96,12 +324,21 @@ def _rel(p: Path, root: Path) -> str:
 )
 @click.option("--force-initial-sync", is_flag=True, help="Re-convert all files at startup.")
 @click.option("--quiet", is_flag=True, help="Only print errors and batch summaries.")
+@_scan_options
 def watch(
     src: Path,
     output: Path | None,
     no_initial_sync: bool,
     force_initial_sync: bool,
     quiet: bool,
+    max_size: str,
+    pdf_max_size: str,
+    include_hidden: bool,
+    follow_symlinks: bool,
+    ignore_file: Path | None,
+    exclude: tuple[str, ...],
+    respect_gitignore: bool,
+    max_depth: int | None,
 ) -> None:
     """Watch SRC for changes and auto-convert them to Markdown.
 
@@ -113,6 +350,21 @@ def watch(
     src = src.resolve()
     out_root = output.resolve() if output else (src / "converted")
 
+    try:
+        cfg = _build_scan_config(
+            max_size=max_size,
+            pdf_max_size=pdf_max_size,
+            include_hidden=include_hidden,
+            follow_symlinks=follow_symlinks,
+            ignore_file=ignore_file,
+            exclude=exclude,
+            respect_gitignore=respect_gitignore,
+            max_depth=max_depth,
+        )
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(2)
+
     def _print_batch(messages: list[str]) -> None:
         for m in messages:
             if m.startswith("FAIL"):
@@ -120,7 +372,7 @@ def watch(
             elif not quiet:
                 click.echo(m)
 
-    watcher = Watcher(src, out_root, on_batch=_print_batch)
+    watcher = Watcher(src, out_root, on_batch=_print_batch, scan_config=cfg)
 
     if not no_initial_sync:
         ok, skipped, failed = watcher.initial_sync(force=force_initial_sync)

@@ -119,3 +119,35 @@ def test_initial_sync_handles_empty_dir(tmp_path: Path) -> None:
     src.mkdir()
     ok, skipped, failed = Watcher(src, out).initial_sync()
     assert (ok, skipped, failed) == (0, 0, 0)
+
+
+def test_initial_sync_skips_files_inside_out_root(tmp_path: Path) -> None:
+    """initial_sync must not re-process files that live inside out_root."""
+    src = tmp_path / "A"
+    out = src / "converted"
+    src.mkdir()
+    (src / "a.csv").write_text("h\n1\n", encoding="utf-8")
+    (out / "stale").mkdir(parents=True)
+    (out / "stale" / "ghost.csv").write_text("h\n9\n", encoding="utf-8")
+
+    ok, _, failed = Watcher(src, out).initial_sync()
+    assert failed == 0
+    assert ok == 1
+    assert (out / "a.md").exists()
+    assert not (out / "stale" / "ghost.md").exists()
+
+
+def test_initial_sync_default_excludes(tmp_path: Path) -> None:
+    """initial_sync uses Scanner defaults — dotdirs and .git skipped."""
+    src = tmp_path / "A"
+    out = tmp_path / "B"
+    src.mkdir()
+    (src / ".git").mkdir()
+    (src / ".git" / "tracked.csv").write_text("h\n1\n", encoding="utf-8")
+    (src / "real.csv").write_text("h\n1\n", encoding="utf-8")
+
+    ok, _, failed = Watcher(src, out).initial_sync()
+    assert failed == 0
+    assert ok == 1
+    assert (out / "real.md").exists()
+    assert not (out / ".git" / "tracked.md").exists()

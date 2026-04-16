@@ -54,9 +54,31 @@ mdpack convert proposal.docx -o out/
 
 - `-o, --output PATH` — output directory (default: `<src>/converted` for dirs).
 - `--force` — re-convert even if the output is newer than the source.
-- `--quiet` — only print errors.
+- `--quiet` — only print errors. `--no-progress` — hide the progress bar.
+- `-j, --jobs N` — worker threads (default 1). Helps for DOCX/PPTX-heavy trees.
+- `--max-size SIZE` — skip files larger than this (default `100MB`, `0` = unlimited).
+- `--pdf-max-size SIZE` — separate cap for PDFs (default `50MB`).
+- `--include-hidden` / `--follow-symlinks` — both off by default.
+- `--exclude PATTERN` — gitignore-syntax pattern, repeatable.
+- `--ignore-file PATH` — extra ignore file (default: `<src>/.mdpackignore` if present).
+- `--respect-gitignore` — also honour `<src>/.gitignore`.
+- `--max-depth N` — cap recursion depth.
 
 Incremental by default — mdpack skips files whose output is newer than the source.
+
+### Large directories
+
+Pointing mdpack at `~` or `~/Documents` will not cripple your machine: by default
+junk dirs (`.git`, `node_modules`, `.venv`, `__pycache__`, `Library`, `.Trash`, …)
+are skipped, files over 100 MB are skipped, PDFs over 50 MB are skipped, and
+symlinks are not followed. Drop a `.mdpackignore` file (gitignore syntax) at the
+root for project-specific overrides:
+
+```gitignore
+drafts/
+*.tmp.csv
+archive/2024-old/
+```
 
 ### Inspect supported formats
 
@@ -194,7 +216,7 @@ came from:
 title: Q1 Sales Review
 source: q1/sales.xlsx
 converter: xlsx
-converter_version: mdpack 0.2.0
+converter_version: mdpack 0.3.0
 converted_at: 2026-04-16T05:30:00Z
 ---
 
@@ -209,7 +231,10 @@ converted_at: 2026-04-16T05:30:00Z
 
 ## Roadmap
 
-Next up (0.3.0): **HTML** and **EPUB** (pandoc), and ready-to-use background scripts
+Next up (0.3.1): a separate concurrency lane for PDFs (so `-j N` parallelises
+DOCX/PPTX without multiplying Docling's 1 GB model footprint).
+
+Then: **HTML** and **EPUB** (pandoc), and ready-to-use background scripts
 (maybe a `mdpack install-service` that writes the plist / systemd unit for you).
 
 Scanned / image-only PDFs (OCR) remain intentionally out of scope — if you need them,

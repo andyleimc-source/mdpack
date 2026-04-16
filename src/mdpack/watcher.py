@@ -14,7 +14,8 @@ from watchdog.observers import Observer
 
 from .converters.base import ConversionError
 from .registry import find_converter, supported_extensions
-from .walker import ConvertJob, iter_jobs, needs_update, resolve_dst, run_job
+from .scanner import ScanConfig, Scanner
+from .walker import ConvertJob, needs_update, resolve_dst, run_job
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class Watcher:
         out_root: Path,
         *,
         on_batch: Callable[[list[str]], None] | None = None,
+        scan_config: ScanConfig | None = None,
     ) -> None:
         self.src_root = src_root.resolve()
         self.out_root = out_root.resolve()
@@ -82,12 +84,12 @@ class Watcher:
         self.status = WatchStatus()
         self._on_batch = on_batch
         self._exts = {e.lower() for e in supported_extensions()}
+        self._scan_config = scan_config or ScanConfig()
 
     def initial_sync(self, force: bool = False) -> tuple[int, int, int]:
         """Run an incremental pass to bring out_root up to date with src_root."""
-        jobs = iter_jobs(self.src_root, self.out_root)
         ok = skipped = failed = 0
-        for job in jobs:
+        for job in Scanner(self._scan_config).scan(self.src_root, self.out_root):
             if not needs_update(job, force=force):
                 skipped += 1
                 continue

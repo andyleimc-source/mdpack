@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.3.0 (2026-04-16)
+
+### Breaking changes
+
+- **Default scan now skips junk directories**: `.git`, `.hg`, `.svn`, `.venv`,
+  `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`,
+  `dist`, `build`, `node_modules`, `.next`, `.nuxt`, `.parcel-cache`, `.turbo`,
+  `target`, `.idea`, `.vscode`, `Library`, `.Trash`, `.cache`, `converted`. Use
+  `--exclude` / `.mdpackignore` to add more, or `--include-hidden` to see
+  dotfiles.
+- **Files larger than 100 MB are skipped by default**, PDFs larger than 50 MB
+  by default. Override with `--max-size 0` / `--pdf-max-size 0` (0 = unlimited).
+- **Symlinks are no longer followed by default**. Use `--follow-symlinks` to
+  restore the previous behaviour. Loops are detected by inode.
+- `mdpack.walker.iter_jobs` is gone — file discovery is now `mdpack.scanner.Scanner`.
+  No CLI surface change.
+
+### New features
+
+- **`mdpack.scanner.Scanner`** — generator-based file walker that never
+  materialises the full tree, enforces size caps, honours `.mdpackignore`
+  (gitignore syntax via `pathspec`), and refuses to descend into the output
+  directory (no more self-recursion when `-o` lives inside `src`).
+- **CLI flags** on `convert` and `watch`:
+  `--max-size`, `--pdf-max-size`, `--include-hidden`, `--follow-symlinks`,
+  `--ignore-file`, `--exclude PATTERN` (repeatable), `--respect-gitignore`,
+  `--max-depth`. Plus `--no-progress` and `-j/--jobs N` on `convert`.
+- **Progress bar** on `convert` when stderr is a TTY (suppress with `--quiet`
+  or `--no-progress`).
+- **`-j N` worker threads** for `convert`. Pandoc-based conversions (DOCX/PPTX)
+  benefit; PDF stays effectively serial because Docling shares a singleton
+  model.
+
+### Fixes
+
+- A second `mdpack convert <dir>` no longer walks into the previously-generated
+  `<dir>/converted/` and re-processes its own output.
+- `PdfConverter` reuses a single `DocumentConverter` (~1 GB torch + transformers)
+  across the whole batch instead of reloading per file.
+- Watcher's `initial_sync` honours all the same exclusions as `convert`.
+
+### Known limitations
+
+- PDF conversion does not yet have its own concurrency lane — running with
+  `-j N` on a PDF-heavy tree won't parallelise PDFs (Docling holds the GIL most
+  of the time and a process pool would multiply the 1 GB model footprint).
+  Likely 0.3.1.
+
 ## 0.2.1 (2026-04-16)
 
 ### Fixes
