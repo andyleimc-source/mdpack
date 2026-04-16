@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.0 (2026-04-16)
+
+### New features
+
+- **`mdpack watch <src> [-o OUT]`** — keeps `OUT/` in sync with `src/` as files change.
+  File create/modify/delete/move are batched with a 1.5s debounce, then re-converted or
+  removed. Ctrl-C to stop. See the README's **Watch mode** section for backgrounding
+  (nohup / tmux / launchd) and the recommended setup with `mdrag serve`.
+- **PDF support** (optional) — `pip install 'mdpack[pdf]'` pulls [Docling](https://github.com/docling-project/docling).
+  Without the extra installed, the converter still lists PDF in `mdpack formats` but raises
+  an actionable error on first use pointing to the extras install.
+- **PPTX support** — via pandoc, same plumbing as DOCX.
+- **`mdpack doctor`** now reports pandoc (explicitly mentions DOCX+PPTX), openpyxl,
+  docling (info-level — optional), and watchdog status.
+
+### Refactors
+
+- Extracted `run_pandoc()` into `converters/_pandoc.py`. DOCX and PPTX share the same
+  subprocess implementation; adding HTML/EPUB later should be a handful of lines each.
+- Moved the private `_run_job()` from `cli.py` into `walker.run_job()` (public) so
+  both the `convert` command and the watcher reuse it.
+
+### Infrastructure
+
+- `.github/workflows/ci.yml` — ruff + pytest on Python 3.10/3.11/3.12, pandoc
+  pre-installed in the runner so DOCX/PPTX tests execute in CI.
+
+### Notes
+
+- PDF extras (`mdpack[pdf]`) pull torch + transformers (~1GB). Only install if you
+  actually need PDF — core install remains lightweight.
+- The watcher intentionally refuses to re-convert files it wrote itself. If you point
+  `-o` at a subdirectory of the source (e.g. `mdpack watch A -o A/converted`), writes
+  under `A/converted/` are filtered out of the event stream.
+
 ## 0.1.0 (2026-04-16)
 
 First functional release.

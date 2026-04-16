@@ -11,11 +11,20 @@ def test_formats_command() -> None:
     assert "csv" in result.output
     assert "xlsx" in result.output
     assert "docx" in result.output
+    assert "pptx" in result.output
+    assert "pdf" in result.output
 
 
 def test_doctor_reports_mdpack_version() -> None:
     result = CliRunner().invoke(main, ["doctor"])
     assert "mdpack:" in result.output
+
+
+def test_watch_help() -> None:
+    result = CliRunner().invoke(main, ["watch", "--help"])
+    assert result.exit_code == 0
+    assert "Watch SRC for changes" in result.output
+    assert "--no-initial-sync" in result.output
 
 
 def test_convert_dir_mirrors_tree(tmp_path: Path) -> None:

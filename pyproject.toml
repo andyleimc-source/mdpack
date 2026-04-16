@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mdpack"
-version = "0.1.0"
-description = "Convert any directory of docs (DOCX, CSV, XLSX) to clean Markdown."
+version = "0.2.0"
+description = "Convert any directory of docs (DOCX, PPTX, PDF, XLSX, CSV) to clean Markdown, with a watch mode that auto-syncs on change."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
     {name = "Andy Lei", email = "leimingcan@icloud.com"}
 ]
-keywords = ["markdown", "converter", "docx", "xlsx", "csv", "rag", "llm", "pandoc"]
+keywords = ["markdown", "converter", "docx", "pptx", "pdf", "xlsx", "csv", "rag", "llm", "pandoc", "docling", "watch"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
@@ -26,9 +26,11 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "openpyxl>=3.1",
+    "watchdog>=4.0",
 ]
 
 [project.optional-dependencies]
+pdf = ["docling>=2.0"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",

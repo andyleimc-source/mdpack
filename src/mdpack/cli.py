@@ -10,9 +10,8 @@ import click
 
 from . import __version__
 from .converters.base import ConversionError
-from .frontmatter import build_frontmatter
-from .registry import CONVERTERS, find_converter, supported_extensions
-from .walker import ConvertJob, iter_jobs, needs_update
+from .registry import CONVERTERS, supported_extensions
+from .walker import iter_jobs, needs_update, run_job
 
 
 @click.group()
@@ -59,7 +58,7 @@ def convert(src: Path, output: Path | None, force: bool, quiet: bool) -> None:
                 click.echo(f"skip   {_rel(job.dst, out_root)} (up to date)")
             continue
         try:
-            _run_job(job, source_root=source_root)
+            run_job(job, source_root=source_root)
             ok += 1
             if not quiet:
                 click.echo(f"ok     {_rel(job.dst, out_root)}")
@@ -73,31 +72,75 @@ def convert(src: Path, output: Path | None, force: bool, quiet: bool) -> None:
         sys.exit(2)
 
 
-def _run_job(job: ConvertJob, *, source_root: Path) -> None:
-    conv = find_converter(job.src.suffix)
-    if conv is None:
-        raise ConversionError(job.src, "no converter registered")
-
-    result = conv.convert(job.src)
-    if not result.body.strip():
-        raise ConversionError(job.src, "converter produced empty output")
-
-    fm = build_frontmatter(
-        src=job.src,
-        converter_name=conv.name,
-        title=result.title,
-        source_root=source_root,
-    )
-
-    job.dst.parent.mkdir(parents=True, exist_ok=True)
-    job.dst.write_text(fm + result.body, encoding="utf-8")
-
-
 def _rel(p: Path, root: Path) -> str:
     try:
         return str(p.relative_to(root))
     except ValueError:
         return str(p)
+
+
+@main.command()
+@click.argument("src", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "-o",
+    "--output",
+    "output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output directory (default: <src>/converted).",
+)
+@click.option(
+    "--no-initial-sync",
+    is_flag=True,
+    help="Skip the one-time incremental sync at startup.",
+)
+@click.option("--force-initial-sync", is_flag=True, help="Re-convert all files at startup.")
+@click.option("--quiet", is_flag=True, help="Only print errors and batch summaries.")
+def watch(
+    src: Path,
+    output: Path | None,
+    no_initial_sync: bool,
+    force_initial_sync: bool,
+    quiet: bool,
+) -> None:
+    """Watch SRC for changes and auto-convert them to Markdown.
+
+    Runs in the foreground — press Ctrl-C to stop. Create/modify/delete/move
+    events on supported file types trigger a debounced re-conversion.
+    """
+    from .watcher import Watcher
+
+    src = src.resolve()
+    out_root = output.resolve() if output else (src / "converted")
+
+    def _print_batch(messages: list[str]) -> None:
+        for m in messages:
+            if m.startswith("FAIL"):
+                click.echo(m, err=True)
+            elif not quiet:
+                click.echo(m)
+
+    watcher = Watcher(src, out_root, on_batch=_print_batch)
+
+    if not no_initial_sync:
+        ok, skipped, failed = watcher.initial_sync(force=force_initial_sync)
+        if not quiet:
+            click.echo(
+                f"initial sync: {ok} converted, {skipped} up-to-date, {failed} failed "
+                f"(src={src}, out={out_root})"
+            )
+
+    watcher.start()
+    click.echo(f"watching {src} → {out_root} (Ctrl-C to stop)")
+    try:
+        import time
+
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        click.echo("\nstopping...")
+    finally:
+        watcher.stop()
 
 
 @main.command()
@@ -126,16 +169,37 @@ def doctor() -> None:
         import subprocess
         v = subprocess.run(["pandoc", "--version"], capture_output=True, text=True, check=False)
         first = v.stdout.splitlines()[0] if v.stdout else "unknown"
-        click.echo(f"{ok} pandoc:   {first}")
+        click.echo(f"{ok} pandoc:   {first} (used for DOCX, PPTX)")
     else:
-        click.echo(f"{bad} pandoc:   not found (DOCX conversion will fail — `brew install pandoc`)")
+        click.echo(
+            f"{bad} pandoc:   not found "
+            "(DOCX/PPTX conversion will fail — `brew install pandoc`)"
+        )
         problems += 1
 
     try:
         import openpyxl
         click.echo(f"{ok} openpyxl: {openpyxl.__version__}")
     except ImportError:
-        click.echo(f"{bad} openpyxl: not installed (XLSX conversion will fail — `pip install openpyxl`)")
+        click.echo(
+            f"{bad} openpyxl: not installed (XLSX conversion will fail — `pip install openpyxl`)"
+        )
+        problems += 1
+
+    import importlib.util as _iu
+    if _iu.find_spec("docling") is not None:
+        click.echo(f"{ok} docling:  installed (PDF enabled)")
+    else:
+        click.echo(
+            "ℹ️  docling:  not installed — PDF disabled. "
+            "Install with `pip install 'mdpack[pdf]'` (pulls ~1GB)"
+        )
+
+    import importlib.util as _iu2
+    if _iu2.find_spec("watchdog") is not None:
+        click.echo(f"{ok} watchdog: installed (watch mode available)")
+    else:
+        click.echo(f"{bad} watchdog: missing — reinstall mdpack")
         problems += 1
 
     if problems:

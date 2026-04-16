@@ -5,12 +5,16 @@ from __future__ import annotations
 from .converters import Converter
 from .converters.csv_conv import CsvConverter
 from .converters.docx_conv import DocxConverter
+from .converters.pdf_conv import PdfConverter
+from .converters.pptx_conv import PptxConverter
 from .converters.xlsx_conv import XlsxConverter
 
 CONVERTERS: tuple[Converter, ...] = (
     CsvConverter(),
     XlsxConverter(),
     DocxConverter(),
+    PptxConverter(),
+    PdfConverter(),
 )
 
 
