@@ -22,14 +22,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install pandoc (used by DOCX/PPTX tests)
-        run: |
-          # Ubuntu's apt pandoc is too old for PPTX as an input format.
-          # Download the latest .deb from GitHub releases instead.
-          PANDOC_VERSION=3.1.11.1
-          curl -fsSL -o /tmp/pandoc.deb "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-amd64.deb"
-          sudo dpkg -i /tmp/pandoc.deb
-          pandoc --version | head -1
+      - name: Install pandoc (used by DOCX tests; PPTX uses python-pptx, not pandoc)
+        run: sudo apt-get install -y pandoc
 
       - name: Install package + dev deps
         run: |

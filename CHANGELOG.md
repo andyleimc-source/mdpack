@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 (2026-04-16)
+
+### Fixes
+
+- **PPTX converter switched from pandoc to `python-pptx`.** Pandoc only gained PPTX
+  *input* support in 3.8.3 (released days ago) — most users, including Ubuntu's apt
+  packages and many existing Homebrew installs, don't have it. `python-pptx` reads
+  the PPTX XML directly and has no sharp version edges. Slides become `## Slide N: <title>`
+  sections; tables and bulleted text are preserved; all speaker notes and embedded
+  images are skipped.
+- CI now only needs Ubuntu's stock pandoc (used for DOCX tests); PPTX tests run
+  in-process via `python-pptx`.
+
 ## 0.2.0 (2026-04-16)
 
 ### New features
